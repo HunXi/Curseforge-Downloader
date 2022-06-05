@@ -1,0 +1,2 @@
+# Curseforge-Downloader
+用于下载curseforge整合包并转换到multimc实例
