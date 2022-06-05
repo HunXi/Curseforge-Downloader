@@ -10,4 +10,4 @@
 python .\curseforge.py xxxx.zip
 ```
 
-完成之后打开multimc或playmc启动器即可看到新增的实例
+完成之后打开multimc或polymc启动器即可看到新增的实例
