@@ -6,6 +6,7 @@ import zipfile
 import shutil
 
 import aiohttp
+from aiohttp.client_exceptions import ContentTypeError
 
 
 def gen_instance_cfg(file_path: str, mod_pack_name="", ):
@@ -79,16 +80,39 @@ def unzip(zip_file_path: str, to_path: str):
 
 async def download_mod(sem, session, project_info: dict, save_path: str):
     async with sem:
-        base_url = "https://addons-ecs.forgesvc.net/api/v2/addon/"
+        # base_url = "https://addons-ecs.forgesvc.net/api/v2/addon/"
+        base_url = "https://api.curseforge.com"
 
         # 根据项目id和文件id取得mod文件的下载地址
-        url = f"{base_url}{project_info['projectID']}/file/{project_info['fileID']}"
+        # url = f"{base_url}{project_info['projectID']}/file/{project_info['fileID']}"
+        url = f"{base_url}/v1/mods/{project_info['projectID']}/files/{project_info['fileID']}"
         async with session.get(url=url) as response:
-            temp_json = await response.json()
+            try:
+                temp_json = await response.json()
+            except(ContentTypeError, TimeoutError, Exception):
+                print(f"\t{url} 下载地址获取失败")
+                return
 
             # 临时保存mod信息的字典
-            temp_dict = {"id": temp_json["id"], "filename": temp_json["fileName"],
-                         "fileLength": temp_json["fileLength"], "downloadUrl": temp_json["downloadUrl"]}
+            temp_dict = {
+                "id": temp_json["data"].get("id", ""),
+                "filename": temp_json["data"].get("fileName", ""),
+                "fileLength": temp_json["data"].get("fileLength", ""),
+                "downloadUrl": temp_json["data"].get("downloadUrl", "")
+            }
+
+        if temp_dict["downloadUrl"] is None:  # 某些mod无法获得下载地址 这时候需要特殊处理
+            get_mod_url = f"{base_url}/v1/mods/{project_info['projectID']}"
+            async with session.get(url=get_mod_url) as get_mod:
+                try:
+                    json_to_dict = await get_mod.json()
+                except(ContentTypeError, Exception):
+                    print(f"\t 错误 {get_mod_url}")
+                    return
+                mod_website_url = json_to_dict["data"]["links"].get("websiteUrl", "")  # 获得mod的主页地址
+                mod_download_page_url = f"{mod_website_url}/download/{project_info['fileID']}"  # 拼接mod下载页地址
+                fail_list.append({"id": temp_dict.get("id"), "modDownloadPageUrl": mod_download_page_url, })
+            return  # 由于没有下载地址 所以直接返回 不继续后面的下载动作
 
         # 开始下载mod
         async with session.get(url=temp_dict["downloadUrl"]) as mod_response:
@@ -97,12 +121,14 @@ async def download_mod(sem, session, project_info: dict, save_path: str):
                 try:
                     mod_content = await mod_response.content.read()
                     break
-                except TimeoutError:
+                except(asyncio.TimeoutError, TimeoutError, Exception):
+                    print("\t asyncio.TimeoutError")
                     pass
 
             # 写到文件
             with open(f"{save_path}/{temp_dict['filename']}", "wb") as save_file:
                 save_file.write(mod_content)
+
         print(f"\t文件 {temp_dict['filename']} 下载完成")
 
 
@@ -111,10 +137,18 @@ async def main():
     config_path = "./config.json"
     with open(config_path, "r") as f:
         config_json = json.load(f)
-    multimc_path = config_json["multiMcPath"]  # 从配置文件读取multimc的安装路径
+    multimc_path = config_json.get("multiMcPath", "")  # 从配置文件读取multimc的安装路径
+    api_key = config_json.get("apiKey", "")  # 从配置文件读取apikey
     if not os.path.isdir(multimc_path):
         print("请在config.json中设置正确的multimc安装目录")
         quit()
+
+    if api_key == "":
+        print("请在config.json中设置正确的apikey")
+        quit()
+
+    headers["x-api-key"] = api_key
+
     multimc_instance_path = f"{multimc_path}/instances"  # multimc实例目录
     work_dir = multimc_instance_path  # 设置工作目录
     # 判断一下传进来的zip路径是否存在
@@ -165,14 +199,26 @@ async def main():
     gen_mmc_pack(mmc_pack_json_path, pack_info["minecraft_version"], pack_info["forge_version"])
     print("\t生成 mmc-pack.json 完毕")
 
+    if fail_list is not None:
+        # 失败列表不为none
+        print(f"下列mod无法自动下载，请手动下载后移动到 {mods_folder_path} 目录:")
+        for item in fail_list:
+            print(f"\t{item['modDownloadPageUrl']}")
+
     print("完成")
 
 
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
-semaphore = asyncio.Semaphore(10)
+semaphore = asyncio.Semaphore(5)
+fail_list = []  # 保存下载失败mod
 
-headers = {"user-agent": "", }
+# 请求头
+headers = {
+    "user-agent": "Safari/537.36",
+    'Accept': 'application/json',
+    'x-api-key': "",
+}
 
 if __name__ == '__main__':
     loop.run_until_complete(main())
